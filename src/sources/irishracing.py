@@ -69,6 +69,68 @@ def _norm_course(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
 
 
+_FORM_RE = re.compile(r"^(?=.*\d)[0-9PFURBCOSVDL/\-]{2,15}$", re.I)
+_WEIGHT_RE = re.compile(r"^(\d{1,2})\s*[-\u2013]\s*(\d{1,2})$")
+_DAYS_RE = re.compile(r"(\d{1,4})\s*(?:days?|d)\b", re.I)
+_BADGE_RE = re.compile(r"^(?:(?:C|D|CD|BF|C&D)\s*)+$")
+
+
+def _parse_runner_context(before: list[str], after: list[str]) -> dict:
+    """
+    Pull form / age / weight / trainer / jockey / OR / days-since / C&D
+    from the lines around a runner's name. Anything not found stays blank,
+    so a layout change degrades to "no form" instead of crashing.
+    """
+    out = {
+        "form": "", "rating": "", "days_since": "", "course_distance": "",
+        "trainer": "", "jockey": "", "weight": "", "age": "", "sex": "", "draw": "",
+    }
+
+    for ln in reversed(before):
+        t = ln.replace(" ", "")
+        if (_FORM_RE.match(t) and not t.isdigit()) or (t.isdigit() and len(t) >= 3):
+            out["form"] = t
+            break
+
+    text_fields = []
+    weight_seen = False
+    for ln in after:
+        t = ln.strip()
+        if not t:
+            continue
+        if _BADGE_RE.match(t):
+            out["course_distance"] = (out["course_distance"] + " " + t).strip()
+            continue
+        m_days = _DAYS_RE.search(t)
+        if m_days and not out["days_since"] and len(t) <= 12:
+            out["days_since"] = m_days.group(1)
+            continue
+        m_w = _WEIGHT_RE.match(t)
+        if m_w and not out["weight"]:
+            out["weight"] = t
+            weight_seen = True
+            continue
+        if t.isdigit():
+            n = int(t)
+            if not out["age"] and 2 <= n <= 15 and not weight_seen:
+                out["age"] = t
+            elif weight_seen and not out["rating"] and 20 <= n <= 190:
+                out["rating"] = t
+            continue
+        m_or = re.match(r"^OR\s*(\d{2,3})$", t, re.I)
+        if m_or:
+            out["rating"] = m_or.group(1)
+            continue
+        if re.search(r"[A-Za-z]{2,}", t) and len(t) <= 40 and len(text_fields) < 2:
+            text_fields.append(t)
+
+    if text_fields:
+        out["trainer"] = text_fields[0]
+    if len(text_fields) > 1:
+        out["jockey"] = text_fields[1]
+    return out
+
+
 @dataclass(frozen=True)
 class Race:
     date: str
@@ -89,6 +151,7 @@ class IrishRacingClient:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": UA})
+        self.debug_lines: list[str] = []
 
     def fetch_today(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         return self.fetch_for_date(datetime.now().date())
@@ -161,6 +224,8 @@ class IrishRacingClient:
         html = self.session.get(url, timeout=self.timeout).text
         soup = BeautifulSoup(html, "lxml")
         text = soup.get_text("\n", strip=True)
+        if not self.debug_lines:
+            self.debug_lines = [f"URL: {url}"] + text.split("\n")[:800]
 
         going = ""
         m_going = re.search(r"Going\s*-\s*(.+?)\.", text)
@@ -238,47 +303,47 @@ class IrishRacingClient:
                 name = re.sub(r"\.\s*$", "", name)
                 horse_to_odds[name.lower()] = frac
 
-            for ln in lines:
-                if len(ln) < 2 or len(ln) > 60:
-                    continue
+            # Index of each runner's name line in this race block
+            name_idx = []
+            for i, ln in enumerate(lines):
                 if ln.lower().startswith("probable sp"):
                     break
-                if re.search(
-                    r"\b(Probable|Image:|Midnite|Handicap|Maiden|Novice|H'cap|Stakes|Conditions|Weights|Penalties)\b",
-                    ln,
-                    re.IGNORECASE,
-                ):
+                if ln.lower() in horse_to_odds:
+                    name_idx.append(i)
+
+            seen = set()
+            for k, i in enumerate(name_idx):
+                ln = lines[i]
+                key = ln.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                frac = horse_to_odds[key]
+                dec = _frac_to_decimal(frac)
+                if not dec:
                     continue
 
-                key = ln.lower()
-                if key in horse_to_odds:
-                    frac = horse_to_odds[key]
-                    dec = _frac_to_decimal(frac)
-                    if not dec:
-                        continue
-                    runner_rows.append({
-                        "date": date_iso,
-                        "date_label": date_label,
-                        "course": course,
-                        "off_time": off_time,
-                        "race_name": race_name,
-                        "distance": dist,
-                        "going": going,
-                        "class_band": class_band,
-                        "race_id": race_key,
-                        "runner": ln,
-                        "best_price_frac": frac,
-                        "best_price_dec": float(dec),
-                        "rating": "",
-                        "days_since": 60,
-                        "course_distance": "",
-                        "trainer": "",
-                        "jockey": "",
-                        "weight": "",
-                        "age": "",
-                        "sex": "",
-                        "draw": "",
-                    })
+                prev_i = name_idx[k - 1] if k > 0 else max(0, i - 6)
+                next_i = name_idx[k + 1] if k + 1 < len(name_idx) else min(len(lines), i + 12)
+                before = lines[max(prev_i + 1, i - 6):i]
+                after = lines[i + 1:min(next_i, i + 14)]
+                info = _parse_runner_context(before, after)
+
+                runner_rows.append({
+                    "date": date_iso,
+                    "date_label": date_label,
+                    "course": course,
+                    "off_time": off_time,
+                    "race_name": race_name,
+                    "distance": dist,
+                    "going": going,
+                    "class_band": class_band,
+                    "race_id": race_key,
+                    "runner": ln,
+                    "best_price_frac": frac,
+                    "best_price_dec": float(dec),
+                    **info,
+                })
 
         races_df = pd.DataFrame(races_rows)
         runners_df = (
