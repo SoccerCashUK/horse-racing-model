@@ -112,6 +112,9 @@ def build_runner_scores(runners: pd.DataFrame) -> pd.DataFrame:
     )
 
     df["value_edge"] = df["model_prob"] - df["market_prob"]
+    # Expected value at the price actually on offer (bookmaker margin included).
+    # This is the number that decides whether a bet is worth taking.
+    df["ev"] = df["model_prob"] * df["best_price_dec"] - 1.0
     df["fair_odds"] = (1.0 / df["model_prob"]).round(2)
     df["confidence"] = (df["model_prob"] * 100).round(1)
 
@@ -126,11 +129,11 @@ def build_value_bets(scored: pd.DataFrame, min_edge: float) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df["value_edge"] = pd.to_numeric(df["value_edge"], errors="coerce")
-    df = df.dropna(subset=["value_edge"]).copy()
-    df = df[(df["value_edge"] >= float(min_edge)) & (df.get("has_form", 1) == 1)].copy()
+    df["ev"] = pd.to_numeric(df["ev"], errors="coerce")
+    df = df.dropna(subset=["ev"]).copy()
+    df = df[(df["ev"] >= float(min_edge)) & (df.get("has_form", 1) == 1)].copy()
     if df.empty:
         return df
 
     df["suggested_stake_units"] = 1
-    return df.sort_values("value_edge", ascending=False).head(50)
+    return df.sort_values("ev", ascending=False).head(50)
