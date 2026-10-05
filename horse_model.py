@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
@@ -27,15 +28,24 @@ def env(name: str, default: str | None = None) -> str:
 
 
 def _normalize_off_time(s: str) -> str:
-    t = str(s).strip()
+    """
+    Racecard times are 12-hour without am/pm ("1.55" = 13:55).
+    Sheets may also have turned "4.00" into "4" or "1.50" into "1.5".
+    Returns 24-hour "HH:MM".
+    """
+    t = str(s).strip().replace(":", ".")
     if not t:
         return t
-    t = t.replace(".", ":")
-    m = pd.Series([t]).str.extract(r"^(\d{1,2}):(\d{2})$").iloc[0]
-    if pd.isna(m[0]) or pd.isna(m[1]):
+    m = re.match(r"^(\d{1,2})(?:\.(\d{1,2}))?$", t)
+    if not m:
         return t
-    hh = int(m[0])
-    mm = int(m[1])
+    hh = int(m.group(1))
+    mm_s = m.group(2) or "00"
+    if len(mm_s) == 1:
+        mm_s += "0"
+    mm = int(mm_s)
+    if 1 <= hh <= 9:
+        hh += 12
     return f"{hh:02d}:{mm:02d}"
 
 
@@ -261,7 +271,7 @@ def build_signals(
     )
 
 
-def build_bets_to_place(signals: pd.DataFrame) -> pd.DataFrame:
+def build_bets_to_place(signals: pd.DataFrame, min_edge: float = 0.0) -> pd.DataFrame:
     if signals is None or signals.empty:
         return pd.DataFrame()
 
@@ -272,8 +282,9 @@ def build_bets_to_place(signals: pd.DataFrame) -> pd.DataFrame:
     df["mover_night_pct"] = pd.to_numeric(df.get("mover_night_pct", 0), errors="coerce").fillna(0.0)
 
     # Keep only horses that have at least one clear reason
+    edge_floor = max(float(min_edge), 1e-9)
     has_reason = (
-        (df["value_edge"] > 0)
+        (df["value_edge"] >= edge_floor)
         | (df["mover_2h_pct"] <= -MIN_MOVE_PCT)
         | (df["mover_night_pct"] <= -MIN_MOVE_PCT)
     )
@@ -285,7 +296,7 @@ def build_bets_to_place(signals: pd.DataFrame) -> pd.DataFrame:
     df["has_shortening"] = (
         (df["mover_2h_pct"] <= -MIN_MOVE_PCT) | (df["mover_night_pct"] <= -MIN_MOVE_PCT)
     ).astype(int)
-    df["has_value"] = (df["value_edge"] > 0).astype(int)
+    df["has_value"] = (df["value_edge"] >= edge_floor).astype(int)
     df["priority"] = df["has_value"] + df["has_shortening"]  # 0, 1 or 2
 
     # Rank inside each race by priority first, then signal_score
@@ -329,7 +340,7 @@ def update_bet_recs_log(writer: SheetsWriter, bets_to_place: pd.DataFrame) -> No
     if new_rows.empty:
         return
 
-    out = pd.DataFrame()
+    out = pd.DataFrame(index=new_rows.index)
     out["timestamp_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     out["bet_key"] = new_rows["bet_key"]
     for c in [
@@ -454,7 +465,7 @@ def main() -> int:
     signals = build_signals(scored, movers_2h, movers_night, persistence)
     writer.write_df("SIGNALS", signals)
 
-    bets_to_place = build_bets_to_place(signals)
+    bets_to_place = build_bets_to_place(signals, min_edge=min_edge)
     writer.write_df("BETS_TO_PLACE", bets_to_place)
 
     update_bet_recs_log(writer, bets_to_place)
@@ -462,7 +473,7 @@ def main() -> int:
     dashboard = build_dashboard(races_df, scored, movers_2h, movers_night, bets_to_place)
     writer.write_df("DASHBOARD", dashboard)
 
-    writer.write_df(
+    writer.append_df(
         "RUN_LOG",
         pd.DataFrame(
             [
