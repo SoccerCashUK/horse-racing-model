@@ -81,9 +81,11 @@ def build_runner_scores(runners: pd.DataFrame) -> pd.DataFrame:
     )
 
     cd_raw = df.get("course_distance", "")
-    cd_str = cd_raw.astype(str) if not isinstance(cd_raw, str) else pd.Series("", index=df.index)
-    df["cd"] = cd_str.str.contains(r"CD|C&D|C\s*D", case=False, na=False).astype(float)
-    df.loc[cd_str.str.contains(r"\b[CD]\b", case=False, na=False) & (df["cd"] == 0), "cd"] = 0.5
+    cd_str = (cd_raw.astype(str) if not isinstance(cd_raw, str) else pd.Series("", index=df.index)).str.lower()
+    has_cd = cd_str.str.contains(r"\bcd\d*", na=False)
+    has_c = cd_str.str.contains(r"\bc\d*\b", na=False)
+    has_d = cd_str.str.contains(r"\bd\d*\b", na=False)
+    df["cd"] = np.where(has_cd | (has_c & has_d), 1.0, np.where(has_c | has_d, 0.5, 0.0))
 
     # --- Standardise within race so outsiders don't get a free lift ---
     df["rating_z"] = _zscore_in_race(df, "rating")
