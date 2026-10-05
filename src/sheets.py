@@ -102,8 +102,8 @@ class SheetsWriter:
         self._ensure_size(ws, len(existing) + len(out) + 2, width)
 
         # Repair tabs that were created without a header row
-        first = [str(c).strip() for c in existing[0]][:cols_needed]
-        if first != header:
+        first = {str(c).strip() for c in existing[0]}
+        if not (first & set(header)):
             ws.insert_row(header, index=1, value_input_option="RAW")
 
         ws.append_rows(out.astype(str).values.tolist(), value_input_option="RAW")
