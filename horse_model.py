@@ -217,6 +217,7 @@ def build_signals(
     df["runner_count"] = pd.to_numeric(df.get("runner_count", 0), errors="coerce").fillna(0)
     df = df[df["runner_count"] <= MAX_RUNNERS_FOR_SIGNAL].copy()
     df["value_edge"] = pd.to_numeric(df.get("value_edge", 0), errors="coerce").fillna(0.0)
+    df["ev"] = pd.to_numeric(df.get("ev", 0), errors="coerce").fillna(0.0)
 
     m2 = (
         movers_2h[["race_id", "runner", "pct_change"]].rename(columns={"pct_change": "mover_2h_pct"})
@@ -260,7 +261,7 @@ def build_signals(
     out["shorten_night_score"] = (-out["mover_night_pct"]).clip(lower=0)
 
     out["signal_score"] = (
-        1.0 * out["value_edge"].clip(lower=0)
+        1.0 * out["ev"].clip(lower=0)
         + 0.8 * out["shorten_2h_score"]
         + 1.2 * out["shorten_night_score"]
         + 0.15 * out["shorten_steps_last4"]
@@ -277,14 +278,14 @@ def build_bets_to_place(signals: pd.DataFrame, min_edge: float = 0.0) -> pd.Data
 
     df = signals.copy()
     df["signal_score"] = pd.to_numeric(df.get("signal_score", 0), errors="coerce").fillna(0.0)
-    df["value_edge"] = pd.to_numeric(df.get("value_edge", 0), errors="coerce").fillna(0.0)
+    df["ev"] = pd.to_numeric(df.get("ev", 0), errors="coerce").fillna(0.0)
     df["mover_2h_pct"] = pd.to_numeric(df.get("mover_2h_pct", 0), errors="coerce").fillna(0.0)
     df["mover_night_pct"] = pd.to_numeric(df.get("mover_night_pct", 0), errors="coerce").fillna(0.0)
 
     # Keep only horses that have at least one clear reason
     edge_floor = max(float(min_edge), 1e-9)
     has_reason = (
-        (df["value_edge"] >= edge_floor)
+        (df["ev"] >= edge_floor)
         | (df["mover_2h_pct"] <= -MIN_MOVE_PCT)
         | (df["mover_night_pct"] <= -MIN_MOVE_PCT)
     )
@@ -296,7 +297,7 @@ def build_bets_to_place(signals: pd.DataFrame, min_edge: float = 0.0) -> pd.Data
     df["has_shortening"] = (
         (df["mover_2h_pct"] <= -MIN_MOVE_PCT) | (df["mover_night_pct"] <= -MIN_MOVE_PCT)
     ).astype(int)
-    df["has_value"] = (df["value_edge"] >= edge_floor).astype(int)
+    df["has_value"] = (df["ev"] >= edge_floor).astype(int)
     df["priority"] = df["has_value"] + df["has_shortening"]  # 0, 1 or 2
 
     # Rank inside each race by priority first, then signal_score
@@ -342,7 +343,7 @@ def update_bet_recs_log(writer: SheetsWriter, bets_to_place: pd.DataFrame) -> No
     out["bet_key"] = new_rows["bet_key"]
     for c in [
         "date", "course", "off_time", "race_name", "runner", "best_price_dec",
-        "signal_score", "value_edge", "mover_2h_pct", "mover_night_pct",
+        "signal_score", "value_edge", "ev", "mover_2h_pct", "mover_night_pct",
         "shorten_steps_last4", "suggested_stake_units", "fair_odds", "has_form",
     ]:
         out[c] = new_rows.get(c, "")
@@ -352,7 +353,7 @@ def update_bet_recs_log(writer: SheetsWriter, bets_to_place: pd.DataFrame) -> No
 
     cols = [
         "timestamp_utc", "bet_key", "date", "course", "off_time", "race_name", "runner",
-        "best_price_dec", "signal_score", "value_edge", "mover_2h_pct", "mover_night_pct",
+        "best_price_dec", "signal_score", "value_edge", "ev", "mover_2h_pct", "mover_night_pct",
         "shorten_steps_last4", "suggested_stake_units", "fair_odds", "has_form",
         "result", "pnl_units", "notes",
     ]
