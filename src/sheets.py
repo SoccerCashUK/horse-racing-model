@@ -85,15 +85,28 @@ class SheetsWriter:
 
         ws = self._upsert_worksheet(title)
         out = df.copy().fillna("")
-        cols_needed = len(out.columns)
+        header = [str(c) for c in out.columns]
+        cols_needed = len(header)
 
         existing = ws.get_all_values()
-        if not existing:
+        # gspread returns [[]] (truthy) for a blank sheet, so check for real content
+        has_content = any(any(str(c).strip() for c in row) for row in existing)
+
+        if not has_content:
+            ws.clear()
             self._ensure_size(ws, len(out) + 1, cols_needed)
-            ws.update([out.columns.tolist()] + out.astype(str).values.tolist())
-        else:
-            self._ensure_size(ws, len(existing) + len(out) + 1, max(cols_needed, len(existing[0]) if existing else 1))
-            ws.append_rows(out.astype(str).values.tolist(), value_input_option="USER_ENTERED")
+            ws.update([header] + out.astype(str).values.tolist())
+            return
+
+        width = max(cols_needed, len(existing[0]))
+        self._ensure_size(ws, len(existing) + len(out) + 2, width)
+
+        # Repair tabs that were created without a header row
+        first = [str(c).strip() for c in existing[0]][:cols_needed]
+        if first != header:
+            ws.insert_row(header, index=1, value_input_option="RAW")
+
+        ws.append_rows(out.astype(str).values.tolist(), value_input_option="RAW")
 
     def read_df(self, title: str) -> pd.DataFrame:
         ws = self._upsert_worksheet(title)
