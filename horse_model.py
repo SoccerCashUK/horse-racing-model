@@ -300,12 +300,9 @@ def build_bets_to_place(signals: pd.DataFrame, min_edge: float = 0.0) -> pd.Data
     df["priority"] = df["has_value"] + df["has_shortening"]  # 0, 1 or 2
 
     # Rank inside each race by priority first, then signal_score
-    df["rank_in_race"] = (
-        df.groupby("race_id")
-        .apply(lambda g: g["priority"] * 1000 + g["signal_score"])
-        .reset_index(level=0, drop=True)
-        .rank(ascending=False, method="first")
-    )
+    df["_sort_key"] = df["priority"] * 1000 + df["signal_score"]
+    df["rank_in_race"] = df.groupby("race_id")["_sort_key"].rank(ascending=False, method="first")
+    df = df.drop(columns=["_sort_key"])
     df = df[df["rank_in_race"] <= 2].copy()
 
     df["suggested_stake_units"] = 1
@@ -346,7 +343,7 @@ def update_bet_recs_log(writer: SheetsWriter, bets_to_place: pd.DataFrame) -> No
     for c in [
         "date", "course", "off_time", "race_name", "runner", "best_price_dec",
         "signal_score", "value_edge", "mover_2h_pct", "mover_night_pct",
-        "shorten_steps_last4", "suggested_stake_units",
+        "shorten_steps_last4", "suggested_stake_units", "fair_odds", "has_form",
     ]:
         out[c] = new_rows.get(c, "")
     out["result"] = ""
@@ -356,7 +353,8 @@ def update_bet_recs_log(writer: SheetsWriter, bets_to_place: pd.DataFrame) -> No
     cols = [
         "timestamp_utc", "bet_key", "date", "course", "off_time", "race_name", "runner",
         "best_price_dec", "signal_score", "value_edge", "mover_2h_pct", "mover_night_pct",
-        "shorten_steps_last4", "suggested_stake_units", "result", "pnl_units", "notes",
+        "shorten_steps_last4", "suggested_stake_units", "fair_odds", "has_form",
+        "result", "pnl_units", "notes",
     ]
     writer.append_df("BET_RECS_LOG", out[cols])
 
@@ -433,6 +431,9 @@ def main() -> int:
             ]
         ),
     )
+
+    if getattr(client, "debug_lines", None):
+        writer.write_df("DEBUG_CARD", pd.DataFrame({"line": client.debug_lines}))
 
     writer.write_df("RACES_TARGET", races_df)
     writer.write_df("RUNNERS_TARGET", scored)
