@@ -69,65 +69,81 @@ def _norm_course(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
 
 
-_FORM_RE = re.compile(r"^(?=.*\d)[0-9PFURBCOSVDL/\-]{2,15}$", re.I)
-_WEIGHT_RE = re.compile(r"^(\d{1,2})\s*[-\u2013]\s*(\d{1,2})$")
-_DAYS_RE = re.compile(r"(\d{1,4})\s*(?:days?|d)\b", re.I)
-_BADGE_RE = re.compile(r"^(?:(?:C|D|CD|BF|C&D)\s*)+$")
+_AGE_WT_RE = re.compile(r"^(\d{1,2})\s+(\d{1,2}-\d{1,2})$")
+_BADGES = {"c", "d", "cd", "bf"}
+_GEAR = {"b", "v", "p", "cp", "t", "ts", "h", "e/s", "es", "e", "s", "tb", "vs", "hb"}
+
+
+def _is_form(t: str) -> bool:
+    return bool(re.fullmatch(r"[0-9PFURBCOSVDL/\-]+", t, re.I)) and len(t) <= 15
 
 
 def _parse_runner_context(before: list[str], after: list[str]) -> dict:
     """
-    Pull form / age / weight / trainer / jockey / OR / days-since / C&D
-    from the lines around a runner's name. Anything not found stays blank,
-    so a layout change degrades to "no form" instead of crashing.
+    irishracing.com "all races" card, one runner, as text lines:
+
+      before name: [prev runner's trailing lines...] No, Draw(flat), ShortForm, FullForm
+      after name:  [badge, count]*  "3 9-9"  Trainer  Jockey  [OR]  [next No, Draw...]
+
+    Badges: c / d / cd / bf with a count; gear: cp, ts, v, b, h, t ... with a count.
+    Fields that can't be found are left blank.
     """
     out = {
         "form": "", "rating": "", "days_since": "", "course_distance": "",
-        "trainer": "", "jockey": "", "weight": "", "age": "", "sex": "", "draw": "",
+        "gear": "", "trainer": "", "jockey": "", "weight": "", "age": "", "sex": "", "draw": "",
     }
 
-    for ln in reversed(before):
-        t = ln.replace(" ", "")
-        if (_FORM_RE.match(t) and not t.isdigit()) or (t.isdigit() and len(t) >= 3):
-            out["form"] = t
-            break
+    # --- before the name: form (short form repeated as suffix of full form) ---
+    rest = list(before)
+    if len(rest) >= 2 and _is_form(rest[-1]) and _is_form(rest[-2]) and \
+            rest[-1].replace("-", "").endswith(rest[-2].replace("-", "")) and \
+            len(rest) >= 3 and rest[-3].isdigit():
+        # only form if a saddle number/draw is still left in front of it;
+        # otherwise the pair was "No, Draw" for an unraced horse (e.g. "4", "4")
+        out["form"] = rest[-1]
+        rest = rest[:-2]
+    # draw: the line after the saddle number (flat races only)
+    if len(rest) >= 2 and rest[-1].isdigit() and rest[-2].isdigit():
+        # rest[-2] = saddle no, rest[-1] = draw; but in jumps rest[-2] may be prev OR
+        no, dr = int(rest[-2]), int(rest[-1])
+        if no <= 40 and dr <= 40:
+            out["draw"] = rest[-1]
 
-    text_fields = []
-    weight_seen = False
-    for ln in after:
-        t = ln.strip()
-        if not t:
+    # --- after the name ---
+    j = 0
+    badges, gear = [], []
+    while j < len(after) and not _AGE_WT_RE.match(after[j]):
+        tok = after[j].strip().lower()
+        cnt = after[j + 1] if j + 1 < len(after) and after[j + 1].strip().isdigit() else ""
+        if tok in _BADGES:
+            badges.append(tok + cnt)
+            j += 2 if cnt else 1
             continue
-        if _BADGE_RE.match(t):
-            out["course_distance"] = (out["course_distance"] + " " + t).strip()
+        if tok.rstrip("+") in _GEAR:
+            gear.append(tok + cnt)
+            j += 2 if cnt else 1
             continue
-        m_days = _DAYS_RE.search(t)
-        if m_days and not out["days_since"] and len(t) <= 12:
+        m_days = re.fullmatch(r"\(?(\d{1,4})\)?", tok)
+        if m_days and tok.startswith("("):
             out["days_since"] = m_days.group(1)
-            continue
-        m_w = _WEIGHT_RE.match(t)
-        if m_w and not out["weight"]:
-            out["weight"] = t
-            weight_seen = True
-            continue
-        if t.isdigit():
-            n = int(t)
-            if not out["age"] and 2 <= n <= 15 and not weight_seen:
-                out["age"] = t
-            elif weight_seen and not out["rating"] and 20 <= n <= 190:
-                out["rating"] = t
-            continue
-        m_or = re.match(r"^OR\s*(\d{2,3})$", t, re.I)
-        if m_or:
-            out["rating"] = m_or.group(1)
-            continue
-        if re.search(r"[A-Za-z]{2,}", t) and len(t) <= 40 and len(text_fields) < 2:
-            text_fields.append(t)
+        j += 1
 
-    if text_fields:
-        out["trainer"] = text_fields[0]
-    if len(text_fields) > 1:
-        out["jockey"] = text_fields[1]
+    if j < len(after):
+        m = _AGE_WT_RE.match(after[j])
+        out["age"], out["weight"] = m.group(1), m.group(2)
+        tail = after[j + 1:]
+        if len(tail) >= 1:
+            out["trainer"] = tail[0]
+        if len(tail) >= 2:
+            out["jockey"] = tail[1]
+        if len(tail) >= 3 and tail[2].isdigit():
+            v = int(tail[2])
+            # OR is 20+; a small number here is the next runner's saddle number
+            if v >= 20:
+                out["rating"] = tail[2]
+
+    out["course_distance"] = " ".join(badges)
+    out["gear"] = " ".join(gear)
     return out
 
 
@@ -293,13 +309,24 @@ class IrishRacingClient:
             })
 
             horse_to_odds = {}
+            last_frac = None
             for part in psp.split(","):
                 part = part.strip().rstrip(".")
-                m = re.match(r"(\d+/\d+)\s+(.+)$", part)
-                if not m:
+                if not part:
                     continue
-                frac = m.group(1).strip()
-                name = _clean(m.group(2))
+                m = re.match(r"(\d+/\d+|evens|evs)\s+(.+)$", part, re.I)
+                if m:
+                    frac = m.group(1).strip()
+                    if frac.lower() in ("evens", "evs"):
+                        frac = "1/1"
+                    last_frac = frac
+                    name = _clean(m.group(2))
+                elif last_frac:
+                    # "14/1 Dark Supremacy, Zabeel Express" -> both 14/1
+                    frac = last_frac
+                    name = _clean(part)
+                else:
+                    continue
                 name = re.sub(r"\.\s*$", "", name)
                 horse_to_odds[name.lower()] = frac
 
@@ -310,6 +337,10 @@ class IrishRacingClient:
                     break
                 if ln.lower() in horse_to_odds:
                     name_idx.append(i)
+
+            # Probable SP line index (end of runner section)
+            psp_i = next((j for j, l in enumerate(lines) if l.lower().startswith("probable sp")), len(lines))
+            hdr_i = next((j for j, l in enumerate(lines) if l.upper() == "OR"), -1)
 
             seen = set()
             for k, i in enumerate(name_idx):
@@ -323,10 +354,10 @@ class IrishRacingClient:
                 if not dec:
                     continue
 
-                prev_i = name_idx[k - 1] if k > 0 else max(0, i - 6)
-                next_i = name_idx[k + 1] if k + 1 < len(name_idx) else min(len(lines), i + 12)
-                before = lines[max(prev_i + 1, i - 6):i]
-                after = lines[i + 1:min(next_i, i + 14)]
+                start = name_idx[k - 1] + 1 if k > 0 else hdr_i + 1
+                stop = name_idx[k + 1] if k + 1 < len(name_idx) else psp_i
+                before = lines[start:i]
+                after = lines[i + 1:stop]
                 info = _parse_runner_context(before, after)
 
                 runner_rows.append({
