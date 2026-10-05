@@ -3,7 +3,7 @@ name: Horse Racing Model
 on:
   schedule:
     # Every 20 minutes during typical racing hours (UTC). Adjust if you want.
-    - cron: "*/20 * * * *"
+    - cron: "*/20 7-22 * * *"
   workflow_dispatch:
 
 jobs:
