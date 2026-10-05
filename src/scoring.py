@@ -65,6 +65,14 @@ def build_runner_scores(runners: pd.DataFrame) -> pd.DataFrame:
         lambda s: s / max(1e-9, s.sum())
     )
 
+    # Only claim an edge where real form features exist in the race.
+    # Without them the blend just shrinks prices toward 1/N, which makes
+    # every outsider look like "value" - that is maths, not an edge.
+    has_form = (df["rating_norm"] > 0) | (df["recency"] > 0) | (df["cd"] > 0)
+    race_has_form = has_form.groupby(df["race_id"]).transform("any")
+    df.loc[~race_has_form, "model_prob"] = df.loc[~race_has_form, "market_prob"]
+    df["has_form"] = race_has_form.astype(int)
+
     # Value edge vs normalised market
     df["value_edge"] = df["model_prob"] - df["market_prob"]
 
